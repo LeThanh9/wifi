@@ -8,7 +8,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.autowifi.portal"
+        applicationId = "com.vietnam.freewifi.assistant"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
