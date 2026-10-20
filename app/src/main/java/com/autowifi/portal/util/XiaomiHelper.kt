@@ -59,17 +59,13 @@ object XiaomiHelper {
      */
     fun openBatteryOptimization(context: Context): Boolean {
         try {
-            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:${context.packageName}")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(intent)
-                return true
+            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            context.startActivity(intent)
+            return true
         } catch (e: Exception) {
-            Log.w(TAG, "Failed ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS", e)
+            Log.w(TAG, "Failed ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS", e)
         }
 
         // Xiaomi hidden battery config intent
