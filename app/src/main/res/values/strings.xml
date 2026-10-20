@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Auto Wi-Fi Portal</string>
     <string name="accessibility_service_label">Auto Wi-Fi Portal - Tự động kết nối &amp; Xem quảng cáo</string>
-    <string name="accessibility_service_description">Tự động bấm nút 'Kết nối', 'Xem quảng cáo', 'Tiếp tục' khi bạn vào các mạng Wi-Fi công cộng như Highlands Coffee, Vincom, GS25, Circle K.</string>
+    <string name="accessibility_service_description">Tự động bấm nút \'Kết nối\', \'Xem quảng cáo\', \'Tiếp tục\' khi bạn vào các mạng Wi-Fi công cộng như Highlands Coffee, Vincom, GS25, Circle K.</string>
     <string name="service_notification_title">Auto Wi-Fi Portal đang chạy ngầm</string>
     <string name="service_notification_desc">Sẵn sàng tự động kết nối Wi-Fi Vincom, Highlands, GS25, Circle K...</string>
     <string name="btn_enable_accessibility">Bật quyền Trợ năng (Accessibility)</string>
