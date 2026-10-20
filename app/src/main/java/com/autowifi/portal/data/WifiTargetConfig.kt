@@ -54,7 +54,6 @@ object WifiTargetConfig {
         "kết nối ngay",
         "kết nối",
         "tiếp tục",
-        "đăng nhập",
         "truy cập internet",
         "truy cập",
         "sử dụng internet",
@@ -70,8 +69,6 @@ object WifiTargetConfig {
         "vào mạng",
         // English keywords
         "connect",
-        "login",
-        "log in",
         "continue",
         "access internet",
         "free internet",
