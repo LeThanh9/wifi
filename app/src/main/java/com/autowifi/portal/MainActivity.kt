@@ -17,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import com.autowifi.portal.data.WifiTargetConfig
 import com.autowifi.portal.databinding.ActivityMainBinding
 import com.autowifi.portal.service.AutoPortalAccessibilityService
+import com.autowifi.portal.service.AwingWebViewSolver
 import com.autowifi.portal.service.HeadlessPortalSolver
 import com.autowifi.portal.service.WifiMonitorService
 import com.autowifi.portal.util.XiaomiHelper
@@ -212,14 +213,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnTestPortal.setOnClickListener {
-            Toast.makeText(this, "Đang kiểm tra kết nối Wi-Fi & Captive Portal...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Đang tự động kiểm tra & đăng nhập AWING Wi-Fi...", Toast.LENGTH_SHORT).show()
             lifecycleScope.launch {
-                val solver = HeadlessPortalSolver(this@MainActivity)
-                val solved = solver.trySolvePortal()
-                if (solved) {
-                    Toast.makeText(this@MainActivity, "Kiểm tra xong! Nếu có portal thì cửa sổ đã được mở để tự bấm.", Toast.LENGTH_LONG).show()
+                val awingSolver = AwingWebViewSolver(this@MainActivity)
+                val isSolved = awingSolver.solve()
+                if (isSolved) {
+                    Toast.makeText(this@MainActivity, "Thành công! Đã kết nối Internet qua AWING Wi-Fi (HTTP 204).", Toast.LENGTH_LONG).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Không phát hiện trang quảng cáo hoặc mạng đã vào được bình thường.", Toast.LENGTH_SHORT).show()
+                    val headless = HeadlessPortalSolver(this@MainActivity)
+                    headless.trySolvePortal()
+                    Toast.makeText(this@MainActivity, "Đã mở cổng đăng nhập dự phòng.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
