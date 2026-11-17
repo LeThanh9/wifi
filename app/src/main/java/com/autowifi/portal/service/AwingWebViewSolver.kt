@@ -34,8 +34,8 @@ import java.util.concurrent.TimeUnit
 class AwingWebViewSolver(private val context: Context) {
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(6, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
@@ -76,7 +76,8 @@ class AwingWebViewSolver(private val context: Context) {
 
                 withContext(Dispatchers.Main) {
                     webView = WebView(context.applicationContext).apply {
-                        layout(0, 0, 1080, 1920)
+                        // Ultra-low RAM: Layout at 360x640 instead of 1080x1920 to save ~85-89% surface buffer memory
+                        layout(0, 0, 360, 640)
                         onResume()
                         resumeTimers()
 
@@ -208,9 +209,13 @@ class AwingWebViewSolver(private val context: Context) {
                     try {
                         webView?.apply {
                             stopLoading()
-                            removeJavascriptInterface("AwingBridge")
+                            clearCache(true)
                             clearHistory()
+                            onPause()
+                            pauseTimers()
+                            removeJavascriptInterface("AwingBridge")
                             loadUrl("about:blank")
+                            removeAllViews()
                             destroy()
                         }
                     } catch (e: Exception) {
@@ -232,36 +237,45 @@ class AwingWebViewSolver(private val context: Context) {
 
     /**
      * Probes the network with an HTTP 204 check to detect redirect URL if behind a captive portal.
+     * Uses Connection: close and immediate socket disconnect for minimal network footprint.
      */
     suspend fun detectCaptivePortalUrl(network: Network?): String = withContext(Dispatchers.IO) {
         val testUrl = WifiTargetConfig.PROBE_URL
+        var conn: HttpURLConnection? = null
         try {
             if (network != null) {
-                val conn = network.openConnection(URL(testUrl)) as HttpURLConnection
+                conn = network.openConnection(URL(testUrl)) as HttpURLConnection
                 conn.instanceFollowRedirects = false
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
+                conn.connectTimeout = 4000
+                conn.readTimeout = 4000
+                conn.setRequestProperty("Connection", "close")
                 conn.requestMethod = "GET"
                 conn.connect()
                 val responseCode = conn.responseCode
                 val location = conn.getHeaderField("Location")
-                conn.disconnect()
                 Log.d(TAG, "Captive probe response code: $responseCode, Location: $location")
 
                 if (!location.isNullOrBlank()) {
                     return@withContext location
                 }
             } else {
-                val request = Request.Builder().url(testUrl).build()
-                val response = httpClient.newCall(request).execute()
-                val location = response.header("Location")
-                response.close()
-                if (!location.isNullOrBlank()) {
-                    return@withContext location
+                val request = Request.Builder()
+                    .url(testUrl)
+                    .header("Connection", "close")
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    val location = response.header("Location")
+                    if (!location.isNullOrBlank()) {
+                        return@withContext location
+                    }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error probing captive portal redirect", e)
+        } finally {
+            try {
+                conn?.disconnect()
+            } catch (_: Exception) {}
         }
 
         // Default trigger URL if no redirect found
@@ -270,6 +284,7 @@ class AwingWebViewSolver(private val context: Context) {
 
     /**
      * Verifies whether internet access is actively available by probing generate_204.
+     * Automatically closes sockets immediately after test to release OS socket buffers.
      */
     suspend fun verifyInternetAccess(network: Network?): Boolean = withContext(Dispatchers.IO) {
         val probeUrls = listOf(
@@ -278,30 +293,37 @@ class AwingWebViewSolver(private val context: Context) {
         )
 
         for (probeUrl in probeUrls) {
+            var conn: HttpURLConnection? = null
             try {
                 if (network != null) {
-                    val conn = network.openConnection(URL(probeUrl)) as HttpURLConnection
+                    conn = network.openConnection(URL(probeUrl)) as HttpURLConnection
                     conn.instanceFollowRedirects = false
-                    conn.connectTimeout = 4000
-                    conn.readTimeout = 4000
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 3000
+                    conn.setRequestProperty("Connection", "close")
                     conn.requestMethod = "GET"
                     conn.connect()
                     val code = conn.responseCode
-                    conn.disconnect()
                     if (code == 204) {
                         return@withContext true
                     }
                 } else {
-                    val request = Request.Builder().url(probeUrl).build()
-                    val response = httpClient.newCall(request).execute()
-                    val code = response.code
-                    response.close()
-                    if (code == 204) {
-                        return@withContext true
+                    val request = Request.Builder()
+                        .url(probeUrl)
+                        .header("Connection", "close")
+                        .build()
+                    httpClient.newCall(request).execute().use { response ->
+                        if (response.code == 204) {
+                            return@withContext true
+                        }
                     }
                 }
             } catch (_: Exception) {
                 // Ignore and try fallback
+            } finally {
+                try {
+                    conn?.disconnect()
+                } catch (_: Exception) {}
             }
         }
         false
@@ -324,7 +346,7 @@ class AwingWebViewSolver(private val context: Context) {
 
     companion object {
         private const val TAG = "AwingWebViewSolver"
-        private const val SOLVER_TIMEOUT_MS = 38_000L
+        private const val SOLVER_TIMEOUT_MS = 30_000L
 
         val AWING_SOLVER_SCRIPT = """
 (function () {
@@ -336,7 +358,7 @@ class AwingWebViewSolver(private val context: Context) {
     }
     window.__AWING_SOLVER_ACTIVE__ = true;
 
-    console.log('[AWING_SOLVER] Starting AWING Portal Auto-Solver...');
+    console.log('[AWING_SOLVER] Starting AWING Portal Auto-Solver (Optimized)...');
 
     function log(msg) {
         console.log('[AWING_SOLVER] ' + msg);
@@ -582,9 +604,26 @@ class AwingWebViewSolver(private val context: Context) {
         return false;
     }
 
+    // Step 7: Immediate execution before starting timer
+    if (checkSuccessState()) {
+        window.__AWING_SOLVER_ACTIVE__ = false;
+        return;
+    }
+
+    checkAgreements();
+    handleCustomerPopup();
+    unlockCountdowns();
+    const immediateAction = triggerStateMachineBypass() || clickConnectTriggers() || submitLoginForm();
+    if (immediateAction) {
+        log('Immediate action taken on injection. Stopping solver to preserve CPU.');
+        window.__AWING_SOLVER_ACTIVE__ = false;
+        return;
+    }
+
+    // Throttled loop: 1200ms interval, max 15 attempts (~18s max execution)
     let attemptCount = 0;
-    const maxAttempts = 50;
-    const intervalMs = 500;
+    const maxAttempts = 15;
+    const intervalMs = 1200;
 
     const solverTimer = setInterval(function () {
         attemptCount++;
@@ -605,7 +644,10 @@ class AwingWebViewSolver(private val context: Context) {
             const submitted = submitLoginForm();
 
             if (smBypassed || clicked || submitted) {
-                log('Action taken on attempt #' + attemptCount);
+                log('Action taken on attempt #' + attemptCount + '. Clearing interval immediately.');
+                clearInterval(solverTimer);
+                window.__AWING_SOLVER_ACTIVE__ = false;
+                return;
             }
         } catch (err) {
             log('Error in solver loop: ' + err);
@@ -617,12 +659,6 @@ class AwingWebViewSolver(private val context: Context) {
             window.__AWING_SOLVER_ACTIVE__ = false;
         }
     }, intervalMs);
-
-    checkAgreements();
-    handleCustomerPopup();
-    unlockCountdowns();
-    triggerStateMachineBypass() || clickConnectTriggers() || submitLoginForm();
-
 })();
         """.trimIndent()
     }

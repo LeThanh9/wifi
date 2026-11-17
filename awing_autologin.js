@@ -1,5 +1,5 @@
 /**
- * AWING Wi-Fi Captive Portal Universal Auto-Solver Script
+ * AWING Wi-Fi Captive Portal Universal Auto-Solver Script (Optimized for Ultra-Low CPU)
  * Compatible with connect.awing.vn, awifi.vn, acm.awingconnect.vn, wifi.awing.vn,
  * and partner venues: Highlands Coffee, CGV Cinemas, Trung Nguyen Legend, Vincom, Golden Gate, etc.
  */
@@ -12,7 +12,7 @@
     }
     window.__AWING_SOLVER_ACTIVE__ = true;
 
-    console.log('[AWING_SOLVER] Starting AWING Portal Auto-Solver...');
+    console.log('[AWING_SOLVER] Starting AWING Portal Auto-Solver (Ultra-Low CPU)...');
 
     function log(msg) {
         console.log('[AWING_SOLVER] ' + msg);
@@ -37,7 +37,7 @@
         const checkboxes = document.querySelectorAll(
             'input[type="checkbox"]:not(:checked), #awing-captive__agreement input[type="checkbox"]'
         );
-        checkboxes.forEach(cb => {
+        checkboxes.forEach(function (cb) {
             try {
                 cb.checked = true;
                 cb.dispatchEvent(new Event('change', { bubbles: true }));
@@ -60,7 +60,7 @@
         const skipButtons = document.querySelectorAll(
             '#awing-captive__customerscreen button, .customer-skip-btn, button[class*="skip"], a[class*="skip"]'
         );
-        skipButtons.forEach(btn => {
+        skipButtons.forEach(function (btn) {
             try {
                 btn.click();
                 log('Clicked customer popup skip button');
@@ -70,9 +70,8 @@
 
     // Step 3: Fast-forward countdowns and unlock disabled controls
     function unlockCountdowns() {
-        // Remove disabled flags from buttons
         const disabledButtons = document.querySelectorAll('button[disabled], input[type="submit"][disabled], .btn-disabled');
-        disabledButtons.forEach(btn => {
+        disabledButtons.forEach(function (btn) {
             try {
                 btn.removeAttribute('disabled');
                 btn.classList.remove('btn-disabled');
@@ -80,9 +79,8 @@
             } catch (e) {}
         });
 
-        // Fast-forward video ads if present
         const videos = document.querySelectorAll('video');
-        videos.forEach(v => {
+        videos.forEach(function (v) {
             try {
                 if (!v.paused && v.duration > 0 && v.currentTime < v.duration) {
                     v.currentTime = v.duration;
@@ -92,7 +90,6 @@
             } catch (e) {}
         });
 
-        // Acceleration through AWING internal events if available
         if (window.awingStateMachineContextActions && window.awingConstants) {
             try {
                 const events = window.awingConstants.EVENT_MESSAGE;
@@ -110,10 +107,8 @@
 
     // Step 4: Interact with AWING State Machine directly
     function triggerStateMachineBypass() {
-        // If modern AWING framework is loaded
         if (window.awingStateMachineContextActions) {
             try {
-                // If submit/authen is ready
                 if (typeof window.awingStateMachineContextActions.completeAd === 'function') {
                     window.awingStateMachineContextActions.completeAd();
                     log('Triggered awingStateMachineContextActions.completeAd()');
@@ -160,7 +155,6 @@
 
     // Step 5: DOM Element Clicking (Buttons, Banner links, Connect triggers)
     function clickConnectTriggers() {
-        // High priority selector list for AWING templates
         const prioritizedSelectors = [
             '#acceptconnection_BannerOverflow',
             '#connect-btn',
@@ -178,16 +172,16 @@
             '#landingpage'
         ];
 
-        for (const sel of prioritizedSelectors) {
-            const el = document.querySelector(sel);
-            if (el && el.offsetParent !== null) { // visible
+        for (var i = 0; i < prioritizedSelectors.length; i++) {
+            var sel = prioritizedSelectors[i];
+            var el = document.querySelector(sel);
+            if (el && el.offsetParent !== null) {
                 log('Found priority target: ' + sel);
                 el.click();
                 return true;
             }
         }
 
-        // Search buttons by text content
         const targetPhrases = [
             'kết nối internet',
             'kết nối ngay',
@@ -201,6 +195,7 @@
             'truy cập',
             'access internet',
             'xem video để kết nối',
+            'xem video',
             'xem quảng cáo',
             'bỏ qua',
             'skip',
@@ -210,12 +205,17 @@
         ];
 
         const candidates = document.querySelectorAll('button, input[type="submit"], a.btn, div[role="button"], span.btn');
-        for (const candidate of candidates) {
-            const text = (candidate.innerText || candidate.value || '').trim().toLowerCase();
-            if (text && targetPhrases.some(phrase => text.includes(phrase))) {
-                log('Found button by matching text: "' + text + '"');
-                candidate.click();
-                return true;
+        for (var j = 0; j < candidates.length; j++) {
+            var candidate = candidates[j];
+            var text = (candidate.innerText || candidate.value || '').trim().toLowerCase();
+            if (text) {
+                for (var k = 0; k < targetPhrases.length; k++) {
+                    if (text.indexOf(targetPhrases[k]) !== -1) {
+                        log('Found button by matching text: "' + text + '"');
+                        candidate.click();
+                        return true;
+                    }
+                }
             }
         }
 
@@ -234,7 +234,6 @@
                     return true;
                 }
             } catch (e) {
-                // If input named 'submit' masks form.submit
                 try {
                     HTMLFormElement.prototype.submit.call(frmLogin);
                     notifySuccess('Form Submitted via Prototype');
@@ -245,10 +244,9 @@
         return false;
     }
 
-    // Check if already connected / successful page
     function checkSuccessState() {
         const url = window.location.href.toLowerCase();
-        if (url.includes('/success') || url.includes('/state/connected') || url.includes('/welcome')) {
+        if (url.indexOf('/success') !== -1 || url.indexOf('/state/connected') !== -1 || url.indexOf('/welcome') !== -1) {
             notifySuccess('Page URL is in success state: ' + url);
             return true;
         }
@@ -260,10 +258,26 @@
         return false;
     }
 
-    // Main execution cycle
+    // Immediate action check
+    if (checkSuccessState()) {
+        window.__AWING_SOLVER_ACTIVE__ = false;
+        return;
+    }
+
+    checkAgreements();
+    handleCustomerPopup();
+    unlockCountdowns();
+    const immediateAction = triggerStateMachineBypass() || clickConnectTriggers() || submitLoginForm();
+    if (immediateAction) {
+        log('Immediate action taken on injection. Stopping solver to preserve CPU.');
+        window.__AWING_SOLVER_ACTIVE__ = false;
+        return;
+    }
+
+    // Throttled loop: 1200ms interval, max 15 attempts (~18s max execution)
     let attemptCount = 0;
-    const maxAttempts = 50; // Run for up to ~25 seconds
-    const intervalMs = 500;
+    const maxAttempts = 15;
+    const intervalMs = 1200;
 
     const solverTimer = setInterval(function () {
         attemptCount++;
@@ -284,7 +298,10 @@
             const submitted = submitLoginForm();
 
             if (smBypassed || clicked || submitted) {
-                log('Action taken on attempt #' + attemptCount);
+                log('Action taken on attempt #' + attemptCount + '. Clearing interval immediately.');
+                clearInterval(solverTimer);
+                window.__AWING_SOLVER_ACTIVE__ = false;
+                return;
             }
         } catch (err) {
             log('Error in solver loop: ' + err);
@@ -296,11 +313,4 @@
             window.__AWING_SOLVER_ACTIVE__ = false;
         }
     }, intervalMs);
-
-    // Initial immediate kick
-    checkAgreements();
-    handleCustomerPopup();
-    unlockCountdowns();
-    triggerStateMachineBypass() || clickConnectTriggers() || submitLoginForm();
-
 })();

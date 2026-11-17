@@ -29,7 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 class WifiMonitorService : Service() {
 
@@ -40,6 +40,7 @@ class WifiMonitorService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val solveMutex = Mutex()
+    private val lastSolveTimestampMap = ConcurrentHashMap<String, Long>()
     private var sessionWatchdogJob: Job? = null
     private var currentConnectedNetwork: Network? = null
     private var currentSsid: String = ""
@@ -71,7 +72,6 @@ class WifiMonitorService : Service() {
                 super.onCapabilitiesChanged(network, capabilities)
                 val hasCaptive = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
                 val isValidated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                Log.d(TAG, "Wi-Fi capabilities changed: hasCaptive=$hasCaptive, isValidated=$isValidated")
 
                 if (hasCaptive || !isValidated) {
                     handleWifiEvent(network, capabilities)
@@ -99,6 +99,17 @@ class WifiMonitorService : Service() {
     }
 
     private fun handleWifiEvent(network: Network, capabilities: NetworkCapabilities? = null) {
+        val now = System.currentTimeMillis()
+        val ssid = extractSsid(capabilities)
+        val normalizedSsid = if (ssid.isNotBlank()) ssid else "UNKNOWN"
+
+        // Cooldown check (45s): ignore rapid signal fluctuations and repetitive capability churn
+        val lastSolve = lastSolveTimestampMap[normalizedSsid] ?: 0L
+        if (now - lastSolve < SOLVE_COOLDOWN_MS) {
+            Log.d(TAG, "Event cooldown active for SSID '$normalizedSsid' (${(now - lastSolve) / 1000}s / ${SOLVE_COOLDOWN_MS / 1000}s). Skipping event.")
+            return
+        }
+
         serviceScope.launch {
             if (!solveMutex.tryLock()) {
                 Log.d(TAG, "Solve already in progress. Skipping duplicate event.")
@@ -106,7 +117,14 @@ class WifiMonitorService : Service() {
             }
 
             try {
-                val ssid = extractSsid(capabilities)
+                // Secondary cooldown verification under lock
+                val currentTime = System.currentTimeMillis()
+                val lastRun = lastSolveTimestampMap[normalizedSsid] ?: 0L
+                if (currentTime - lastRun < SOLVE_COOLDOWN_MS) {
+                    Log.d(TAG, "Solve cooldown still active for '$normalizedSsid'. Skipping.")
+                    return@launch
+                }
+
                 currentSsid = ssid
                 currentConnectedNetwork = network
                 Log.d(TAG, "Connected Wi-Fi SSID: $ssid")
@@ -124,9 +142,13 @@ class WifiMonitorService : Service() {
                 if (alreadyConnected) {
                     Log.i(TAG, "Wi-Fi $ssid already has internet access (HTTP 204).")
                     updateNotification("Đã kết nối Wi-Fi: $ssid")
+                    lastSolveTimestampMap[normalizedSsid] = System.currentTimeMillis()
                     startSessionWatchdog(network, ssid)
                     return@launch
                 }
+
+                // Mark timestamp before starting solve to prevent parallel re-trigger
+                lastSolveTimestampMap[normalizedSsid] = System.currentTimeMillis()
 
                 // Wi-Fi requires captive portal login: invoke AWING automated solver
                 updateNotification("Đang tự động đăng nhập AWING Wi-Fi: $ssid...")
@@ -136,6 +158,7 @@ class WifiMonitorService : Service() {
                 if (solved) {
                     Log.i(TAG, "AWING Wi-Fi auto-connected successfully for $ssid!")
                     updateNotification("Đã kết nối AWING Wi-Fi thành công: $ssid")
+                    lastSolveTimestampMap[normalizedSsid] = System.currentTimeMillis()
                     startSessionWatchdog(network, ssid)
                 } else {
                     Log.w(TAG, "AWING WebView solver did not verify 204. Launching fallback portal solver...")
@@ -154,16 +177,17 @@ class WifiMonitorService : Service() {
     }
 
     /**
-     * Periodically verifies connection status and automatically re-authenticates if session expires.
+     * Periodically verifies connection status using zero-overhead coroutine delay (5 min)
+     * and automatically re-authenticates if session expires.
      */
     private fun startSessionWatchdog(network: Network, ssid: String) {
         sessionWatchdogJob?.cancel()
         sessionWatchdogJob = serviceScope.launch {
-            Log.i(TAG, "Started session keepalive watchdog for: $ssid")
+            Log.i(TAG, "Started session keepalive watchdog for: $ssid (Interval: 5 min)")
             while (isActive) {
                 delay(SESSION_WATCHDOG_INTERVAL_MS)
 
-                if (currentConnectedNetwork != network) {
+                if (!isActive || currentConnectedNetwork != network) {
                     break
                 }
 
@@ -176,6 +200,7 @@ class WifiMonitorService : Service() {
                     if (reSolved) {
                         Log.i(TAG, "Successfully renewed AWING session for $ssid!")
                         updateNotification("Đã tự động gia hạn Wi-Fi $ssid thành công!")
+                        lastSolveTimestampMap[ssid] = System.currentTimeMillis()
                     } else {
                         Log.w(TAG, "Re-solve failed, prompting portal window fallback...")
                         headlessSolver.trySolvePortal(network)
@@ -265,7 +290,8 @@ class WifiMonitorService : Service() {
     companion object {
         private const val TAG = "WifiMonitorService"
         private const val NOTIFICATION_ID = 1001
-        private const val SESSION_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000L // 5 minutes
+        private const val SOLVE_COOLDOWN_MS = 45_000L // 45 seconds cooldown per SSID
+        private const val SESSION_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000L // 5 minutes zero-overhead delay
 
         fun start(context: Context) {
             val intent = Intent(context, WifiMonitorService::class.java)

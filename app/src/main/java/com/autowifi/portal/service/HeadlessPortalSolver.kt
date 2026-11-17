@@ -9,35 +9,41 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.TimeUnit
 
 class HeadlessPortalSolver(private val context: Context) {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
 
     suspend fun trySolvePortal(network: Network? = null): Boolean = withContext(Dispatchers.IO) {
+        var httpConn: HttpURLConnection? = null
         try {
             Log.d(TAG, "Starting captive portal detection & headless solve...")
 
-            // Probe Google generate_204 endpoint
+            // Probe Google generate_204 endpoint with Connection: close
             val testUrl = "http://connectivitycheck.gstatic.com/generate_204"
             val request = Request.Builder()
                 .url(testUrl)
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
+                .header("Connection", "close")
                 .build()
 
             val response = if (network != null) {
                 // Bind to the Wi-Fi network specifically
-                val urlConnection = network.openConnection(java.net.URL(testUrl))
-                urlConnection.connectTimeout = 8000
-                urlConnection.readTimeout = 8000
-                val responseCode = (urlConnection as? java.net.HttpURLConnection)?.responseCode ?: 0
-                val redirectedUrl = urlConnection.url.toString()
+                httpConn = network.openConnection(URL(testUrl)) as? HttpURLConnection
+                httpConn?.instanceFollowRedirects = true
+                httpConn?.connectTimeout = 6000
+                httpConn?.readTimeout = 6000
+                httpConn?.setRequestProperty("Connection", "close")
+                val responseCode = httpConn?.responseCode ?: 0
+                val redirectedUrl = httpConn?.url?.toString() ?: ""
                 Log.d(TAG, "Network probe response code: $responseCode, url: $redirectedUrl")
 
                 if (responseCode == 204) {
@@ -46,17 +52,19 @@ class HeadlessPortalSolver(private val context: Context) {
                 }
                 redirectedUrl
             } else {
-                val call = client.newCall(request)
-                val res = call.execute()
-                val code = res.code
-                val redirectedUrl = res.request.url.toString()
-                res.close()
-
-                if (code == 204) {
-                    Log.i(TAG, "Already connected to internet (HTTP 204).")
-                    return@withContext true
+                client.newCall(request).execute().use { res ->
+                    val code = res.code
+                    val redirectedUrl = res.request.url.toString()
+                    if (code == 204) {
+                        Log.i(TAG, "Already connected to internet (HTTP 204).")
+                        return@withContext true
+                    }
+                    redirectedUrl
                 }
-                redirectedUrl
+            }
+
+            if (response.isBlank()) {
+                return@withContext false
             }
 
             Log.i(TAG, "Captive portal detected: $response")
@@ -70,6 +78,10 @@ class HeadlessPortalSolver(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "HeadlessPortalSolver error", e)
             return@withContext false
+        } finally {
+            try {
+                httpConn?.disconnect()
+            } catch (_: Exception) {}
         }
     }
 

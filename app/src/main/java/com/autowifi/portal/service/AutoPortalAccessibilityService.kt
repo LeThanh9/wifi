@@ -13,7 +13,6 @@ class AutoPortalAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastClickTimestamp: Long = 0
-    private val clickDebounceMs = 800L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -25,48 +24,70 @@ class AutoPortalAccessibilityService : AccessibilityService() {
         if (event == null) return
 
         val packageName = event.packageName?.toString() ?: ""
-        // Check if event is from Captive Portal Login, system dialog, or browser/webview
-        val isCaptiveLogin = packageName.contains("captiveportallogin", ignoreCase = true) ||
-                packageName.contains("captiveportal", ignoreCase = true) ||
-                packageName.contains("miui.portal", ignoreCase = true) ||
-                packageName.contains("browser", ignoreCase = true) ||
-                packageName.contains("chrome", ignoreCase = true) ||
-                packageName.contains("webview", ignoreCase = true)
+        // CRITICAL: Fast early check: ignore immediately if not a captive portal or browser.
+        // Avoids waking Handler, posting runnables, or inspecting rootInActiveWindow on unrelated apps.
+        if (!isCaptiveOrBrowserPackage(packageName)) {
+            return
+        }
 
         val eventType = event.eventType
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        // Restrict event handling: ignore all non-window change events.
+        // TYPE_WINDOW_CONTENT_CHANGED is only processed when package is confirmed captive portal or browser.
+        if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
-            val now = System.currentTimeMillis()
-            if (now - lastClickTimestamp < clickDebounceMs) {
-                return
-            }
-
-            handler.removeCallbacksAndMessages(null)
-            handler.postDelayed({
-                processActiveWindow(isCaptiveLogin)
-            }, 250)
+            return
         }
+
+        val now = System.currentTimeMillis()
+        if (now - lastClickTimestamp < CLICK_DEBOUNCE_MS) {
+            return
+        }
+
+        handler.removeCallbacksAndMessages(null)
+        handler.postDelayed({
+            if (System.currentTimeMillis() - lastClickTimestamp >= CLICK_DEBOUNCE_MS) {
+                processActiveWindow()
+            }
+        }, 250)
     }
 
-    private fun processActiveWindow(isLikelyCaptive: Boolean) {
+    private fun isCaptiveOrBrowserPackage(packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        val lower = packageName.lowercase()
+        return lower.contains("captiveportallogin") ||
+                lower.contains("captiveportal") ||
+                lower.contains("miui.portal") ||
+                lower.contains("browser") ||
+                lower.contains("chrome") ||
+                lower.contains("webview") ||
+                lower.contains("firefox") ||
+                lower.contains("sbrowser") ||
+                lower.contains("opera")
+    }
+
+    private fun processActiveWindow() {
+        if (System.currentTimeMillis() - lastClickTimestamp < CLICK_DEBOUNCE_MS) {
+            return
+        }
+
         val rootNode = rootInActiveWindow ?: return
 
         try {
             // Step 1: Auto-check terms / agreement checkboxes
-            val checkedAgreement = findAndCheckAgreement(rootNode)
+            val checkedAgreement = findAndCheckAgreement(rootNode, 0)
             if (checkedAgreement) {
                 Log.d(TAG, "Checked agreement checkbox.")
             }
 
             // Step 2: Skip demographic / survey popups if present
-            val skippedSurvey = findAndSkipSurvey(rootNode)
+            val skippedSurvey = findAndSkipSurvey(rootNode, 0)
             if (skippedSurvey) {
                 Log.d(TAG, "Skipped customer demographic survey.")
             }
 
             // Step 3: Find and click high-priority AWING resource IDs or action buttons
-            val clicked = findAndClickActionNode(rootNode)
+            val clicked = findAndClickActionNode(rootNode, 0)
             if (clicked) {
                 lastClickTimestamp = System.currentTimeMillis()
                 Log.i(TAG, "Auto-clicked Wi-Fi captive portal action button successfully!")
@@ -80,8 +101,8 @@ class AutoPortalAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun findAndCheckAgreement(node: AccessibilityNodeInfo): Boolean {
-        var didCheck = false
+    private fun findAndCheckAgreement(node: AccessibilityNodeInfo, depth: Int = 0): Boolean {
+        if (depth > MAX_SEARCH_DEPTH) return false
 
         val text = (node.text?.toString() ?: "") + " " + (node.contentDescription?.toString() ?: "")
         val lowerText = text.lowercase()
@@ -90,52 +111,73 @@ class AutoPortalAccessibilityService : AccessibilityService() {
         val isCheckable = node.isCheckable || node.className?.contains("CheckBox", ignoreCase = true) == true
 
         if ((isAgreementText || isCheckable) && node.isCheckable && !node.isChecked) {
-            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            didCheck = true
+            val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (clicked) {
+                return true // Abort immediately upon finding a match
+            }
         }
 
         val childCount = node.childCount
         for (i in 0 until childCount) {
             val child = node.getChild(i) ?: continue
-            if (findAndCheckAgreement(child)) {
-                didCheck = true
+            val found = try {
+                findAndCheckAgreement(child, depth + 1)
+            } finally {
+                try {
+                    child.recycle()
+                } catch (_: Exception) {}
             }
-            try {
-                child.recycle()
-            } catch (_: Exception) {}
+            if (found) {
+                return true // Abort immediately upon finding a match
+            }
         }
 
-        return didCheck
+        return false
     }
 
-    private fun findAndSkipSurvey(node: AccessibilityNodeInfo): Boolean {
+    private fun findAndSkipSurvey(node: AccessibilityNodeInfo, depth: Int = 0): Boolean {
+        if (depth > MAX_SEARCH_DEPTH) return false
+
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
         val text = ((node.text?.toString() ?: "") + " " + (node.contentDescription?.toString() ?: "")).lowercase()
 
         val isSkip = viewId.contains("skip") || viewId.contains("customer-skip") ||
                 text.contains("bỏ qua") || text.contains("nhắc tôi sau") || text.contains("remind later") || text.contains("skip")
 
-        if (isSkip && (node.isClickable || node.parent?.isClickable == true)) {
-            val target = if (node.isClickable) node else node.parent
-            if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+        if (isSkip) {
+            if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 return true
+            }
+            val parent = node.parent
+            if (parent != null) {
+                val parentClicked = try {
+                    if (parent.isClickable) parent.performAction(AccessibilityNodeInfo.ACTION_CLICK) else false
+                } finally {
+                    try { parent.recycle() } catch (_: Exception) {}
+                }
+                if (parentClicked) return true
             }
         }
 
         val childCount = node.childCount
         for (i in 0 until childCount) {
             val child = node.getChild(i) ?: continue
-            val skipped = findAndSkipSurvey(child)
-            try {
-                child.recycle()
-            } catch (_: Exception) {}
-            if (skipped) return true
+            val skipped = try {
+                findAndSkipSurvey(child, depth + 1)
+            } finally {
+                try {
+                    child.recycle()
+                } catch (_: Exception) {}
+            }
+            if (skipped) return true // Abort immediately upon finding a match
         }
 
         return false
     }
 
-    private fun findAndClickActionNode(node: AccessibilityNodeInfo): Boolean {
+    private fun findAndClickActionNode(node: AccessibilityNodeInfo, depth: Int = 0): Boolean {
+        if (depth > MAX_SEARCH_DEPTH) return false
+
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
         val nodeText = ((node.text?.toString() ?: "") + " " + (node.contentDescription?.toString() ?: "")).trim().lowercase()
 
@@ -155,7 +197,7 @@ class AutoPortalAccessibilityService : AccessibilityService() {
             Log.d(TAG, "Matched AWING view ID: '$matchedId'")
             if (performClickOnNodeOrParent(node)) {
                 showToast("Auto-Portal: Đã ấn nút kết nối AWING!")
-                return true
+                return true // Abort immediately upon finding a match
             }
         }
 
@@ -169,21 +211,24 @@ class AutoPortalAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "Matched keyword: '$matchedKeyword' in element: '$nodeText'")
                 if (performClickOnNodeOrParent(node)) {
                     showToast("Auto-Portal: Đã tự động ấn '$matchedKeyword'!")
-                    return true
+                    return true // Abort immediately upon finding a match
                 }
             }
         }
 
-        // Recursively check children
+        // Recursively check children up to MAX_SEARCH_DEPTH
         val childCount = node.childCount
         for (i in 0 until childCount) {
             val child = node.getChild(i) ?: continue
-            val clicked = findAndClickActionNode(child)
-            try {
-                child.recycle()
-            } catch (_: Exception) {}
+            val clicked = try {
+                findAndClickActionNode(child, depth + 1)
+            } finally {
+                try {
+                    child.recycle()
+                } catch (_: Exception) {}
+            }
             if (clicked) {
-                return true
+                return true // Abort immediately upon finding a match
             }
         }
 
@@ -191,16 +236,24 @@ class AutoPortalAccessibilityService : AccessibilityService() {
     }
 
     private fun performClickOnNodeOrParent(node: AccessibilityNodeInfo): Boolean {
-        var targetNode: AccessibilityNodeInfo? = node
-        while (targetNode != null && !targetNode.isClickable) {
-            targetNode = targetNode.parent
+        if (node.isClickable) {
+            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
-
-        return if (targetNode != null && targetNode.isClickable) {
-            targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        } else {
-            false
+        var current: AccessibilityNodeInfo? = node.parent
+        while (current != null) {
+            val parentToRecycle = current
+            try {
+                if (current.isClickable) {
+                    return current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }
+                current = current.parent
+            } finally {
+                try {
+                    parentToRecycle.recycle()
+                } catch (_: Exception) {}
+            }
         }
+        return false
     }
 
     private fun showToast(message: String) {
@@ -212,6 +265,7 @@ class AutoPortalAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
+        handler.removeCallbacksAndMessages(null)
         Log.i(TAG, "AutoPortalAccessibilityService destroyed.")
     }
 
@@ -221,6 +275,8 @@ class AutoPortalAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AutoPortalService"
+        private const val CLICK_DEBOUNCE_MS = 1200L
+        private const val MAX_SEARCH_DEPTH = 6
         var isServiceRunning = false
     }
 }
